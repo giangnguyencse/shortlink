@@ -1,0 +1,39 @@
+# default: &default
+#   adapter: postgresql
+#   encoding: unicode
+#   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+#   timeout: 5000
+
+# development:
+#   <<: *default
+#   database: shortlink_development
+#   url: <%= ENV.fetch("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/shortlink_development") %>
+
+# test:
+#   <<: *default
+#   database: shortlink_test
+#   url: <%= ENV.fetch("DATABASE_URL_TEST", "postgresql://postgres:postgres@localhost:5432/shortlink_test") %>
+
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  host: <%= ENV.fetch("DB_HOST", "localhost") %>
+  username: <%= ENV.fetch("DB_USERNAME", "root") %>
+  password: <%= ENV.fetch("DB_PASSWORD", "1Qazxsw@") %>
+
+development:
+  <<: *default
+  database: shortlink_development
+
+test:
+  <<: *default
+  database: shortlink_test
+  
+production:
+  <<: *default
+  url: <%= ENV["DATABASE_URL"] %>
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 10 } %>
+  # PgBouncer compatible settings
+  prepared_statements: false
+  advisory_locks: false

@@ -1,0 +1,66 @@
+require:
+  - rubocop-rails
+  - rubocop-rspec
+
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 3.3
+  Exclude:
+    - 'Gemfile'
+    - 'Gemfile.lock'
+    - 'Rakefile'
+    - 'db/schema.rb'
+    - 'db/seeds.rb'
+    - 'db/migrate/**/*'
+    - 'bin/**/*'
+    - 'config/puma.rb'
+    - 'config/spring.rb'
+    - 'config/environments/**/*'
+    - 'config/initializers/**/*'
+    - 'node_modules/**/*'
+    - 'vendor/**/*'
+    - 'tmp/**/*'
+    - 'test/**/*'
+    - 'log/**/*'
+    - 'public/**/*'
+    - 'storage/**/*'
+    - '.git/**/*'
+
+Style/Documentation:
+  Enabled: false
+
+# Allow longer lines in specs (test descriptions can be verbose)
+Layout/LineLength:
+  Max: 120
+  Exclude:
+    - 'spec/**/*'
+
+# Allow describe blocks without module prefix
+Metrics/BlockLength:
+  Exclude:
+    - 'spec/**/*'
+    - 'config/**/*'
+
+# Service objects often have longer methods
+Metrics/MethodLength:
+  Max: 20
+  CountAsOne: ['array', 'hash', 'heredoc']
+
+Metrics/AbcSize:
+  Max: 25
+
+# Rails-specific
+Rails/SkipsModelValidations:
+  AllowedMethods:
+    - increment!
+    - touch
+
+# RSpec
+RSpec/ExampleLength:
+  Max: 15
+
+RSpec/MultipleExpectations:
+  Max: 5
+
+RSpec/NestedGroups:
+  Max: 5

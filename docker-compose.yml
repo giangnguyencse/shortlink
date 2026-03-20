@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: bash -c "rm -f tmp/pids/server.pid && bundle exec rails server -b 0.0.0.0"
+    volumes:
+      - .:/rails # Mount source code để sửa code nhận ngay không cần build lại (cho dev)
+    ports:
+      - "3000:3000"
+    environment:
+      - DB_HOST=db
+      - DATABASE_URL=postgresql://root:1Qazxsw%40@db:5432/shortlink_development
+      - REDIS_URL=redis://redis:6379/0
+      - RAILS_ENV=development
+    depends_on:
+      db:
+        condition: service_healthy # Chỉ start Web khi DB đã thực sự sẵn sàng
+      redis:
+        condition: service_started
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=1Qazxsw@
+      - POSTGRES_DB=shortlink_development
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Đảm bảo data không mất khi stop container
+    ports:
+      - "5432:5432" # Mở port ra host để dùng tool (DBeaver/TablePlus) soi data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes # Bật tính năng AOF để persistent data của Redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
+  redis_data:
+
+# version: '3.8'
+
+# services:
+#   postgres:
+#     image: postgres:16-alpine
+#     container_name: shortlink_postgres
+#     environment:
+#       POSTGRES_USER:     postgres
+#       POSTGRES_PASSWORD: postgres
+#       POSTGRES_DB:       shortlink_development
+#     ports:
+#       - '5432:5432'
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data
+#     healthcheck:
+#       test: ['CMD-SHELL', 'pg_isready -U postgres']
+#       interval: 5s
+#       timeout: 5s
+#       retries: 5
+
+#   redis:
+#     image: redis:7-alpine
+#     container_name: shortlink_redis
+#     command: redis-server --appendonly yes --save 60 1
+#     ports:
+#       - '6379:6379'
+#     volumes:
+#       - redis_data:/data
+#     healthcheck:
+#       test: ['CMD', 'redis-cli', 'ping']
+#       interval: 5s
+#       timeout: 5s
+#       retries: 5
+
+# volumes:
+#   postgres_data:
+#   redis_data:
