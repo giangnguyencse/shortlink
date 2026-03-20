@@ -5,10 +5,10 @@ FROM registry.docker.com/library/ruby:$RUBY_VERSION-slim as base
 # Set working directory
 WORKDIR /rails
 
-# Set environment variables cho production/staging
-ENV RAILS_ENV="development" \
+# 🛠 BẢN VÁ LỖI SỐ 1: Set đúng môi trường Production để build app an toàn và nhẹ nhất
+ENV RAILS_ENV="production" \
     BUNDLE_PATH="/usr/local/bundle" \
-    BUNDLE_WITHOUT="production"
+    BUNDLE_WITHOUT="development test"
 
 # --- Build Stage ---
 FROM base as build
@@ -42,8 +42,6 @@ COPY --from=build /rails /rails
 
 # SECURITY BOOSTER: Không chạy app bằng quyền root
 # Tạo một non-root user tên là 'rails' và phân quyền
-# SECURITY BOOSTER: Không chạy app bằng quyền root
-# Tạo một non-root user tên là 'rails' và phân quyền
 RUN useradd rails --create-home --shell /bin/bash && \
     mkdir -p db log tmp storage && \
     chown -R rails:rails db log tmp storage
@@ -55,5 +53,5 @@ ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 # Expose port
 EXPOSE 3000
 
-# Lệnh khởi chạy server mặc định (Puma)
-CMD ["bundle", "exec", "puma", "-C", "config/puma.rb"]
+# 🛠 BẢN VÁ LỖI SỐ 2: Tự động chạy Migration (db:prepare) trước khi khởi động Puma Server
+CMD ["bash", "-c", "bundle exec rails db:prepare && bundle exec puma -C config/puma.rb"]
