@@ -11,8 +11,8 @@ Rails.application.configure do
   # Redis Cache Store with connection pool
   config.cache_store = :redis_cache_store, {
     url: ENV.fetch('REDIS_URL', 'redis://redis:6379/0'),
-    pool_size: ENV.fetch('RAILS_MAX_THREADS', 5).to_i,
-    pool_timeout: 5,
+    # pool_size: ENV.fetch('RAILS_MAX_THREADS', 5).to_i,
+    # pool_timeout: 5,
     namespace: 'shortlink',
     expires_in: 24.hours,
     reconnect_attempts: 1,
