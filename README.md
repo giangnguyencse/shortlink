@@ -54,14 +54,14 @@ You can test the Encode endpoint directly from your terminal
 ```bash
 curl -X POST https://shortlink-kp07.onrender.com/api/v1/encode \
   -H "Content-Type: application/json" \
-  -d '{"url": "https://github.com/resources/articles?topic=software-development"}'
+  -d '{"url": "https://docs.github.com/en/integrations/concepts/about-integrations"}'
 ```
 
 2.1 Decode a short URL
 ```bash
 curl -X POST https://shortlink-kp07.onrender.com/api/v1/decode \
   -H "Content-Type: application/json" \
-  -d '{"short_url": "https://shortlink-giangnguyen.onrender.com/Kmmm8g8"}'
+  -d '{"short_url": "https://shortlink-kp07.onrender.com/Kmmm1TI"}'
 ```
 
 ### Successful Response Example
@@ -97,8 +97,7 @@ curl -X POST http://localhost:3000/api/v1/encode \
   "data": {
     "short_url": "http://localhost:3000/Kmmm1ZE",
     "short_code": "Kmmm1ZE",
-    "original_url": "https://github.com/resources/articles?topic=software-development",
-    "created_at": "2026-03-20T03:47:53Z"
+    "original_url": "https://github.com/resources/articles?topic=software-development"
   },
   "meta": { "request_id": "8eea66d8-7be9-41f6-832f-29ed5a586662" }
 }
