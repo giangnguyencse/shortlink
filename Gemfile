@@ -21,7 +21,7 @@ gem 'dotenv-rails', '~> 3.1', groups: %i[development test]
 gem 'bootsnap', '>= 1.4.4', require: false
 
 group :development, :test do
-  gem 'rspec-rails', '~> 6.1'
+  gem 'rspec-rails', '~> 8.0'
   gem 'factory_bot_rails', '~> 6.4'
   gem 'faker', '~> 3.2'
   gem 'pry-rails', '~> 0.3'
