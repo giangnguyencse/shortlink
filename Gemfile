@@ -11,7 +11,7 @@ gem 'puma', '~> 6.4'
 
 # === Performance & Caching ===
 gem 'redis', '~> 5.0'
-gem 'connection_pool', '~> 2.4'
+gem 'connection_pool', '~> 3.0'
 
 # === Security & Rate Limiting ===
 gem 'rack-attack', '~> 6.7'
