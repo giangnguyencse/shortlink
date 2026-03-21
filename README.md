@@ -132,65 +132,253 @@ curl -X POST http://localhost:3000/api/v1/decode \
 
 ## 4. Architectural Approach & The Collision Problem
 
-The Collision Problem
+### 4.1 The Collision Problem
 
-A naive approach to URL shortening involves generating a random string and checking the database for its existence. Under high concurrency, this leads to Race Conditions, the Birthday Paradox (increased collision probability), and heavy database read/write locks.
+A naive approach to URL shortening generates a random short code and checks the database for uniqueness. Under high concurrency this breaks down in three ways:
 
-The Solution: Standalone Key Generation Service (KGS)
+- **Race Conditions** — two concurrent requests generate the same code simultaneously and both pass the uniqueness check before either writes to the database.
+- **Birthday Paradox** — with Base62 and a 7-character code (62⁷ ≈ 3.5 trillion combinations), collision probability grows non-linearly. After ~2.3 million entries the probability of at least one collision exceeds 50%.
+- **Retry Amplification** — each collision requires a retry, which in turn requires another DB read. Under load, this creates a write-heavy, lock-contended hot path.
 
-To guarantee 0% collision and O(1) encode speed, this application implements a pre-allocation strategy:
+### 4.2 Solution: Key Generation Service (KGS) with PostgreSQL Sequence
 
-4.1. PostgreSQL Sequence + Base62: A database sequence guarantees atomic, monotonically increasing integers. Base62 ($62^7 \approx 3.5 \text{ Trillion}$ combinations) ensures short, URL-friendly strings.
+This application eliminates collisions entirely through **pre-allocation** rather than random generation.
 
-4.2. In-Memory Key Pool (Redis): The KeyGenerationService fetches ID batches (e.g., 20,000 at a time) using Postgres generate_series, encodes them to Base62, shuffles them (for unpredictability), and stores them in a Redis List (RPUSH).
+**Step 1 — Atomic ID source (PostgreSQL SEQUENCE)**
 
-4.3. O(1) Retrieval: When an /encode request arrives, the service simply pops a key from Redis (LPOP). No database sequences are queried during the hot path.
+```sql
+-- Atomic, monotonically increasing, never returns the same value twice
+SELECT nextval('short_url_counter')
+FROM generate_series(1, 20000);
+```
 
-4.4. Asynchronous Replenishment: When the Redis pool drops below a threshold (e.g., 5,000 keys), an async thread (guarded by a Redis SET NX Distributed Lock) silently fetches the next batch from the DB.
+A PostgreSQL SEQUENCE is guaranteed atomic at the database level. Even under extreme concurrency, two transactions will never receive the same `nextval`. This is the mathematical foundation of collision-freedom.
 
-Pros: Zero DB write-locks during key generation, zero collisions, extremely low latency.Cons: If Redis crashes completely, the unassigned keys in the pool are lost (which is acceptable, as sequence gaps do not affect functionality).
+**Step 2 — Base62 encoding + shuffle**
 
-IdempotencyIf a user submits the same long URL multiple times, they should receive the same short code. To achieve this without slow full-text B-Tree index scans on VARCHAR(2048), the app computes a SHA256 hash of the URL (url_digest - 64 chars) and places a UNIQUE INDEX on it.
+Each sequence integer is encoded to Base62 (characters `0-9a-zA-Z`) giving a compact, URL-safe string. The batch is then **shuffled** before storage so consecutive requests produce visually unpredictable codes — preventing enumeration attacks.
 
-## 5. Security & Attack Vectors mitigated
+```
+nextval: 1,000,000  →  Base62: "4c92"  →  stored in Redis pool (shuffled order)
+```
 
-5.1. SSRF (Server-Side Request Forgery): Malicious users might submit internal IPs (e.g., http://169.254.169.254 or http://10.0.0.1) to probe AWS metadata or internal networks. UrlValidator uses Ruby's Resolv to check DNS and blocks any request targeting private/reserved IP ranges.
+**Step 3 — Redis Key Pool (O(1) hot path)**
 
-5.2. DDoS & Brute Force: Rack::Attack middleware limits API requests per IP (e.g., 10 req/min for encode, 30 req/min for decode) to prevent spamming the database.
+`KeyGenerationService` stores the pre-generated batch as a Redis List (`RPUSH`). When `/encode` is called, it pops one key instantly (`LPOP`) — **zero database queries** on the hot path.
 
-5.3. Database Injection: Strong parameters and strict Base62 Regex (/\A[0-9a-zA-Z]+\z/) at the routing/service level prevent SQL injection attempts.
+**Step 4 — Asynchronous Replenishment**
 
-5.4. Hot-Path Row Locking (Click Tracking): Updating click_count in the DB on every decode request causes a Thundering Herd problem via row-level locks. This is mitigated by using Redis INCR (non-blocking) for click tracking.
+When the Redis pool drops below a configurable threshold (default: 5,000 keys), a background thread triggers a new batch fetch. This thread is guarded by a **Redis `SET NX` distributed lock** (10-second TTL) to ensure only one server replenishes at a time, even in a multi-instance deployment.
 
+```
+Pool size > 5,000  →  no action (non-blocking check, O(1))
+Pool size < 5,000  →  acquire NX lock  →  generate 20,000 new keys  →  release lock
+```
 
-## 6. Scalability Limitations & Future Evolution
+**Step 5 — Redis Failure Fallback**
 
-While the current architecture handles moderate to high loads (~10,000 RPS) effectively via L1 Caching and KGS, scaling to 1,000,000+ RPS (Hyper-scale) requires transitioning from a monolithic data layer to a distributed ecosystem.
+If Redis is unavailable, the KGS falls back to `SecureRandom.alphanumeric(7)` with a retry loop bounded by the database `UNIQUE` constraint on `short_code`. This guarantees the service stays functional — at reduced performance — even with Redis completely down.
 
-Here is the step-by-step roadmap to scale the system:
+**Step 6 — Idempotency via SHA-256 Digest**
 
-6.1. API & Compute Layer
-- Limitation: Ruby/Puma processes consume significant memory per thread.
+If the same long URL is submitted multiple times, it must return the same short code. A full-text B-Tree index on `VARCHAR(2048)` is expensive. Instead, the application computes `SHA256(url.downcase)` — a fixed-length 64-character hex string — and stores it as `url_digest` with a `UNIQUE INDEX`. This gives O(log n) idempotency lookup at constant index size, regardless of URL length.
 
-- Evolution: Containerize the API and deploy via AWS EKS (Kubernetes) or ECS with Horizontal Pod Autoscaling (HPA).
+| Property | Guarantee |
+|---|---|
+| Collision rate | **0%** — SEQUENCE never repeats |
+| Idempotency | **SHA-256 digest** unique index — same URL → same code |
+| Hot-path latency | **O(1)** — Redis LPOP, no DB query |
+| Concurrency safety | `RecordNotUnique` rescue handles the rare race condition |
 
-- Edge Offloading: Move Rate Limiting (Rack::Attack) to an API Gateway (Kong) or AWS WAF / Cloudflare. Ruby should not waste CPU cycles rejecting malicious IPs.
+---
 
-6.2. Database Layer (The Write Bottleneck)
-- Limitation: A single PostgreSQL instance cannot handle millions of INSERT statements per second, even with KGS mitigating the sequence bottleneck.
+## 5. Security & Attack Vectors
 
-- Evolution - Database Sharding: Partition the database based on a Hash of the short_code. Since KeyGenerationService manages ID creation independently, we don't rely on auto-incrementing primary keys across shards, making horizontal DB scaling trivial.
+### 5.1 Attack Vector Map
 
-- Evolution - Asynchronous Writes: Introduce Apache Kafka or AWS SQS. The /encode endpoint grabs a key from Redis, validates it, drops the payload into Kafka, and returns 201 Created immediately. Background workers (Consumers) batch-insert the records into PostgreSQL (e.g., 10,000 records per transaction).
+| Attack | Risk | Mitigation (Current) | Mitigation (Proposed) |
+|---|---|---|---|
+| **SSRF** | Probe internal services via crafted URLs | `UrlValidator` blocks RFC 1918, loopback, link-local IPs | Enable `check_ssrf: true` in model; async DNS re-validation post-encode |
+| **DDoS / Flood** | Overwhelm DB with bulk encode requests | `rack-attack` — 10 encode/min, 30 decode/min per IP | Move to Cloudflare WAF at the edge; API Gateway throttling per API key |
+| **Brute-force Enumeration** | Sequentially guess short codes to discover URLs | KGS shuffles before storage → non-sequential codes | Add auth on decode; rate-limit per code |
+| **SQL Injection** | Malicious input in `short_url` parameter | Strong params + Base62 regex `/\A[0-9a-zA-Z]+\z/` + parameterized queries | — (already robust) |
+| **Open Redirect Abuse** | Redirect users to phishing/malware sites | HTTP/HTTPS scheme whitelist only | Google Safe Browsing API scan on encode; warning interstitial page |
+| **Cache Poisoning** | Poison decode cache with wrong URL | Cache key = `sha256(url)` — not user-controlled; `short_code` is immutable | — (by design) |
+| **Thundering Herd (click tracking)** | Row-level lock on `click_count` under high concurrency | `increment!` avoided; Redis INCR planned (Phase 2) | Sidekiq cron job batch-flushes Redis counters to DB every 5 min |
+| **Parameter Tampering** | Forge `short_code` format | `Base62Encoder.valid_code?` validates before any DB query | — (already in place) |
 
-6.3. Caching & Read Layer (The Read Bottleneck)
-- Limitation: A single Redis instance will hit CPU limits at ~100k OPS. Requests from global users to a central server introduce network latency.
+### 5.2 SSRF — Deep Dive
 
-- Evolution - Redis Cluster: Migrate to a Redis Cluster to shard the decode caches and KGS pools across multiple master nodes.
+**Threat**: An attacker submits `http://169.254.169.254/latest/meta-data/` (AWS Instance Metadata) or `http://10.0.0.1` (internal network). The shortener naively persists it, and any decode-redirect exposes the internal response.
 
-- Evolution - Edge Caching (CDN): For decodes/redirects, integrate AWS CloudFront or Cloudflare Workers. Sync the short_code -> original_url map to the CDN's Edge KV store. Redirects (302) will happen at the edge nearest to the user in < 5ms, without ever hitting the Ruby backend.
+**Current mitigation** (`UrlValidator`):
+```ruby
+PRIVATE_IP_RANGES = [
+  IPAddr.new('10.0.0.0/8'),       # RFC 1918 Class A
+  IPAddr.new('172.16.0.0/12'),    # RFC 1918 Class B
+  IPAddr.new('192.168.0.0/16'),   # RFC 1918 Class C
+  IPAddr.new('127.0.0.0/8'),      # Loopback
+  IPAddr.new('169.254.0.0/16'),   # Link-local (AWS metadata!)
+  IPAddr.new('::1/128'),          # IPv6 loopback
+  IPAddr.new('fc00::/7'),         # IPv6 unique local
+].freeze
+# Resolves DNS and rejects any IP in these ranges
+```
 
-6.4. Analytics & Click Tracking
-- Limitation: Storing click counts in PostgreSQL (even via batched updates) pollutes the transactional database with heavy write-heavy analytical data.
+**Known limitation**: DNS rebinding — a host resolves to a public IP at validation time but switches to an internal IP afterward. **Proposed fix**: re-validate the resolved IP at redirect time (inside `RedirectsController`).
 
-- Evolution: Use a dedicated OLAP database. Stream click events from Redis/Web nodes to Kafka/Kinesis, and ingest them into ClickHouse or Apache Druid. This decouples the transactional workflow (URL resolution) from the analytical workflow (dashboards).
+### 5.3 Rate Limiting — Multi-Layer Strategy
+
+The current single-layer `rack-attack` approach is not accurate across multiple Puma processes because it uses an in-process store. The proposed multi-layer defence:
+
+```
+L1 — Edge (Cloudflare WAF)         → blocks malicious IPs/ASNs before reaching the server
+L2 — API Gateway (Kong)            → per API-key throttling (1,000 req/min per app)
+L3 — Application (rack-attack)     → per-IP limits using Redis store (accurate, shared)
+L4 — Database (PgBouncer)          → connection pool cap prevents DB saturation
+```
+
+For `rack-attack` to be accurate in a multi-process/multi-instance setup, point it to the shared Redis store:
+
+```ruby
+Rack::Attack.cache.store = ActiveSupport::Cache::RedisCacheStore.new(
+  url: ENV['REDIS_URL'],
+  namespace: 'rack_attack'
+)
+```
+
+### 5.4 Security Response Headers
+
+Every response includes hardening headers set in `ApplicationController`:
+
+```
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+X-XSS-Protection: 1; mode=block
+Referrer-Policy: strict-origin-when-cross-origin
+```
+
+---
+
+## 6. Scalability — Current Limitations & 3-Tier Evolution
+
+### Current Limitations
+
+| Component | Limitation | Impact |
+|---|---|---|
+| **Single Redis node** | No replication or failover | Redis crash = KGS pool lost + cache gone + rate limit bypassed |
+| **Synchronous DB write on encode** | Each `/encode` waits for `INSERT` to commit | At 10k RPS encode → 10k INSERT/s → DB saturation |
+| **Single PostgreSQL instance** | No read replicas | Read and write traffic compete for the same I/O budget |
+| **In-process KGS thread** | `Thread.new` inside Puma dies on process restart | Key pool not replenished until next request triggers it |
+| **rack-attack in-process store** | Per-worker, not shared | Rate limit count is divided across workers — effectively N× looser than configured |
+| **No async write path** | `/encode` is synchronous end-to-end | Cannot absorb traffic spikes; latency tied to DB write latency |
+
+---
+
+### Tier 1 — Current Architecture 
+
+```
+Clients  →  Nginx (reverse proxy)  →  Rails / Puma (1 instance)
+                                          ├──  PostgreSQL  (single node, reads + writes)
+                                          └──  Redis       (single node, KGS + cache + rate limit)
+```
+
+**Strengths**: Simple to operate, zero infrastructure overhead, already handles moderate load via 3-level caching and KGS.
+
+**Bottlenecks**: Single points of failure on both Redis and PostgreSQL; synchronous write path; in-process KGS thread not fault-tolerant.
+
+---
+
+### Tier 2 — Medium Scale 
+
+```
+Clients  →  Cloudflare (WAF, DDoS, rate limit)
+         →  AWS ALB (load balancer)
+         →  Rails / Puma (N instances, auto-scaled)
+               ├── Redis Cluster  (3 primary + 3 replica, Sentinel auto-failover)
+               ├── PostgreSQL Primary  (all writes)
+               ├── PostgreSQL Read Replicas  (all decode reads)
+               └── Sidekiq Workers  (KGS replenishment, click-count flush)
+```
+
+**Key changes from Tier 1**:
+
+- **Redis Cluster + Sentinel**: automatic failover in under 30 seconds. Decode cache, encode cache, and KGS pool are sharded across multiple primaries.
+- **PostgreSQL Primary + Read Replicas**: `/encode` writes to the primary; `/decode` reads from replicas. Separates read and write I/O budgets.
+- **Sidekiq replaces `Thread.new`**: KGS replenishment becomes a persistent, monitored, retryable background job — survives process restarts and server crashes.
+- **Cloudflare at the edge**: rate limiting, WAF, and DDoS protection are offloaded from the Rails application entirely.
+- **`rack-attack` → shared Redis store**: accurate rate limiting across all Puma processes and instances.
+
+**Redis failure handling in Tier 2**:
+- Sentinel detects primary failure and promotes a replica automatically.
+- During the failover window (~10–30s): encode cache miss → L2 PostgreSQL lookup (slower but correct); KGS uses `SecureRandom` fallback.
+
+---
+
+### Tier 3 — Hyper Scale 
+
+```
+Clients  →  Cloudflare Workers (edge decode cache — <5ms globally)
+         →  API Gateway / Kong (auth, per-key throttling, routing)
+               ├── Encode Service  (stateless pods, K8s HPA)
+               │     ├── pop key from KGS Service (gRPC)
+               │     ├── write encode/decode cache to Redis Cluster
+               │     └── publish event to Kafka  →  201 Created (no DB wait)
+               │
+               ├── Decode Service  (stateless pods, K8s HPA)
+               │     ├── L1: Redis Cluster (sharded by short_code)
+               │     └── L2: PostgreSQL Read Replica (geo-distributed)
+               │
+               └── KGS Microservice  (dedicated, isolated scaling)
+                     ├── maintains Redis key pool
+                     └── queries PostgreSQL SEQUENCE in large batches
+
+Kafka  →  Batch Writer Consumers  →  PostgreSQL Primary
+             (INSERT 10,000 rows per transaction)
+             (at-least-once delivery; idempotent via url_digest UNIQUE index)
+```
+
+**Key changes from Tier 2**:
+
+**Async Write Path (Encode)**
+
+The `/encode` endpoint no longer waits for a database `INSERT`. The flow becomes:
+1. Pop key from KGS (Redis LPOP — O(1))
+2. Write to encode and decode Redis caches immediately
+3. Publish `{short_code, original_url, url_digest}` to Kafka
+4. Return `201 Created` to the client
+
+Kafka consumers batch-insert records into PostgreSQL (`10,000 rows/transaction`). Idempotency is preserved by the `UNIQUE INDEX` on `url_digest` — duplicate Kafka messages are silently discarded via `ON CONFLICT DO NOTHING`.
+
+**Edge Decode Cache**
+
+`GET /:short_code` and `POST /decode` for viral links are served entirely from Cloudflare's Edge KV store — without ever reaching the Ruby backend. The CDN is pre-warmed on encode.
+
+**KGS as a Microservice**
+
+With multiple Encode Service pods, a single shared KGS microservice (exposing a gRPC `PopKey()` RPC) manages the Redis key pool. This eliminates the distributed lock complexity inside each Rails process.
+
+**Database Sharding**
+
+When a single PostgreSQL primary can no longer sustain write throughput, the `short_urls` table is horizontally partitioned by `hash(short_code) % N_SHARDS`. Because `KeyGenerationService` assigns keys independently (not via auto-increment primary keys), cross-shard ID conflicts are impossible.
+
+### 6.1 Collision Problem at Scale
+
+The collision strategy adapts across tiers:
+
+| Tier | Strategy | Collision Rate |
+|---|---|---|
+| 1 (current) | PostgreSQL SEQUENCE → Base62 → Redis pool | **0%** |
+| 2 (multi-instance) | Same, Sidekiq-managed replenishment | **0%** |
+| 3 (multi-region) | Snowflake ID or range-partitioned SEQUENCE per region | **0%** |
+
+For multi-region Tier 3, each region is assigned a non-overlapping SEQUENCE range (e.g., Region A: `0–1B`, Region B: `1B–2B`). This eliminates cross-region coordination while preserving the zero-collision guarantee.
+
+### 6.2 Analytics & Click Tracking (All Tiers)
+
+Updating `click_count` synchronously on every decode request creates a row-level lock hot spot — the classic **thundering herd** problem on a viral link.
+
+**Phase 2 mitigation**: Redis `INCR shortlink:clicks:<short_code>` on each decode (non-blocking, O(1)). A Sidekiq cron job flushes these counters to PostgreSQL every 5 minutes in a single batched `UPDATE`.
+
+**Tier 3 evolution**: Decouple analytics entirely. Stream click events to Kafka → ingest into ClickHouse or Apache Druid. The transactional database (`short_urls`) is never touched by analytics writes.
+
