@@ -64,8 +64,7 @@ curl -X POST https://shortlink-kp07.onrender.com/api/v1/decode \
   -d '{"short_url": "https://shortlink-kp07.onrender.com/Kmmm1TI"}'
 ```
 
-2.3 Redirect the original URL
-You can use your browser to check the original URL from the returned short URL 
+2.3 Redirect the original URL. You can use your browser to check the original URL from the returned short URL 
 ```bash
 https://shortlink-kp07.onrender.com/Kmmm1TI
 ```
