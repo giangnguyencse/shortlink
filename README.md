@@ -57,11 +57,17 @@ curl -X POST https://shortlink-kp07.onrender.com/api/v1/encode \
   -d '{"url": "https://docs.github.com/en/integrations/concepts/about-integrations"}'
 ```
 
-2.1 Decode a short URL
+2.2 Decode a short URL
 ```bash
 curl -X POST https://shortlink-kp07.onrender.com/api/v1/decode \
   -H "Content-Type: application/json" \
   -d '{"short_url": "https://shortlink-kp07.onrender.com/Kmmm1TI"}'
+```
+
+2.3 Redirect the original URL
+You can use your browser to check the original URL from the returned short URL 
+```bash
+https://shortlink-kp07.onrender.com/Kmmm1TI
 ```
 
 ### Successful Response Example
