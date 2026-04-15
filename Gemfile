@@ -23,7 +23,7 @@ gem 'bootsnap', '>= 1.4.4', require: false
 group :development, :test do
   gem 'rspec-rails', '~> 6.1'
   gem 'factory_bot_rails', '~> 6.4'
-  gem 'faker', '~> 3.2'
+  gem 'faker', '~> 3.7'
   gem 'pry-rails', '~> 0.3'
   gem 'rubocop', '~> 1.65', require: false
   gem 'rubocop-rails', '~> 2.25', require: false
