@@ -7,7 +7,7 @@ ruby '3.3.0'
 # === Core ===
 gem 'rails', '~> 7.1'
 gem 'pg', '~> 1.5'
-gem 'puma', '~> 6.4'
+gem 'puma', '~> 8.0'
 
 # === Performance & Caching ===
 gem 'redis', '~> 5.0'
